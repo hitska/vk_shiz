@@ -2,8 +2,8 @@
     "my_login": "+79992281488",
     "my_password": "покпокпок",
 
-    "group_address": "<адрес группы, то что после 'https://vk.com/'>",
-    "user_address": "<адрес группы, то что после 'https://vk.com/', например, durov>",
+    "group_address": "<адрес группы в которой ищем, то что после 'https://vk.com/'>",
+    "user_address": "<адрес пользователя которого ищем, то что после 'https://vk.com/', например, durov>",
 
     "search_likes": false,
     "search_comments": true,
