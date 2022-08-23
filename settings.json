@@ -1,0 +1,13 @@
+{
+    "my_login": "+79992281488",
+    "my_password": "покпокпок",
+
+    "group_address": "<адрес группы, то что после 'https://vk.com/'>",
+    "user_address": "<адрес группы, то что после 'https://vk.com/', например, durov>",
+
+    "search_likes": false,
+    "search_comments": true,
+
+    "error_filename": "errors.txt",
+    "results_filename": "results.json"
+}
