@@ -146,9 +146,25 @@ async def main():
             with open(error_filename, 'a') as errfile:
                 errfile.write(full_message)
 
+    async def save_results():
+        async with results_lock:
+            results_txt = json.dumps(results, indent=4, sort_keys=True, ensure_ascii=False)
+        with open(results_filename, 'w') as file:
+            file.write(results_txt)
+
     async def show_info():
+        old_results_activity_len = 0
+
         while parsing_in_process:
             print(f'Текущий пост: {post_count}')
+
+            async with results_lock:
+                new_len = len(results['activity'])
+
+            if new_len > old_results_activity_len:
+                old_results_activity_len = new_len
+                await save_results()
+
             await asyncio.sleep(5)
 
     results = {}
@@ -206,6 +222,7 @@ async def main():
 
         print('Парсим посты...')
 
+        await save_results()
         parsing_in_process = True
         info_task = asyncio.create_task(show_info())
 
@@ -220,15 +237,7 @@ async def main():
                 await asyncio.sleep(0.5)
 
             post_count = post_count + 1
-
-            if post_count % 1000 == 0:
-                async with results_lock:
-                    results_txt = json.dumps(results, indent=4, sort_keys=True, ensure_ascii=False)
-                with open(results_filename, 'w') as file:
-                    file.write(results_txt)
-
             task = asyncio.create_task(process_thread(wall_post))
-
             async with running_post_tasks_lock:
                 running_post_tasks.add(task)
 
@@ -243,9 +252,7 @@ async def main():
     except Exception as error_msg:
         await log_error(error_msg)
 
-    with open(results_filename, 'w') as file:
-        results_txt = json.dumps(results, indent=4, sort_keys=True, ensure_ascii=False)
-        file.write(results_txt)
+    await save_results()
 
     print("Готово.")
 
