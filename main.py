@@ -40,10 +40,10 @@ async def main():
     async def process_thread(post):
         try:
             tasks = set()
-            tasks.add(asyncio.create_task(process_post(post, True)))
+            tasks.add(asyncio.create_task(process_post(post, True, post)))
 
             if search_comments and post['comments']['count'] > 0:
-                tasks.add(asyncio.create_task(process_comments(post)))
+                tasks.add(asyncio.create_task(process_comments(post, post)))
 
             for sub_task in tasks:
                 await sub_task
@@ -57,7 +57,7 @@ async def main():
                 if task_obj in running_post_tasks:
                     running_post_tasks.discard(task_obj)
 
-    async def process_post(post, is_op):
+    async def process_post(post, is_op, parent_post):
         tasks = set()
 
         if post['from_id'] == user_id:
@@ -66,19 +66,19 @@ async def main():
             else:
                 post_type = 'comment'
 
-            tasks.add(asyncio.create_task(user_post_found(post, post_type)))
+            tasks.add(asyncio.create_task(user_post_found(post, post_type, parent_post)))
 
         if search_likes and ('likes' in post) and (post['likes']['count'] > 0):
             if is_op:
                 like_type = 'post'
             else:
                 like_type = 'comment'
-            tasks.add(asyncio.create_task(process_likes(post, like_type)))
+            tasks.add(asyncio.create_task(process_likes(post, like_type, parent_post)))
 
         for sub_task in tasks:
             await sub_task
 
-    async def process_comments(post):
+    async def process_comments(post, parent_post):
         comments = tools.get_all_iter('wall.getComments', 100, {
             'owner_id': -group_id,
             'post_id': post['id'],
@@ -88,7 +88,7 @@ async def main():
 
         tasks = set()
         for comment in comments:
-            tasks.add(asyncio.create_task(process_post(comment, False)))
+            tasks.add(asyncio.create_task(process_post(comment, False, parent_post)))
 
             if comment['thread']['count'] > 0:
                 thread = tools.get_all_iter('wall.getComments', 100, {
@@ -99,12 +99,12 @@ async def main():
                     'comment_id': comment['id']
                 })
                 for thread_post in thread:
-                    tasks.add(asyncio.create_task(process_post(thread_post, False)))
+                    tasks.add(asyncio.create_task(process_post(thread_post, False, parent_post)))
 
         for sub_task in tasks:
             await sub_task
 
-    async def process_likes(post, like_type):
+    async def process_likes(post, like_type, parent_post):
         likes = tools.get_all_iter('likes.getList', 100, {
             'type': like_type,
             'owner_id': -group_id,
@@ -114,22 +114,26 @@ async def main():
         tasks = set()
         for like in likes:
             if like == user_id:
-                tasks.add(asyncio.create_task(user_post_found(post, 'like')))
+                tasks.add(asyncio.create_task(user_post_found(post, 'like', parent_post)))
 
         for sub_task in tasks:
             await sub_task
 
-    async def user_post_found(post, post_type):
+    async def user_post_found(post, post_type, parent_post):
         timestamp = post['date']
         date = str(datetime.datetime.fromtimestamp(timestamp))
         uid = f'#{post["id"]}: {date} - ({post_type})'
+        log_entry = {
+            "text": post['text'],
+            "parent": parent_post['text']
+        }
 
         async with results_lock:
             if results['last_activity']['timestamp'] < timestamp:
                 results['last_activity']['timestamp'] = timestamp
                 results['last_activity']['string'] = date
 
-            results['activity'][uid] = post['text']
+            results['activity'][uid] = log_entry
 
     async def log_error(message):
         now = datetime.datetime.now().isoformat(sep=" ", timespec="seconds")
