@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-import json_file
+
 import datetime
 import json
 import asyncio
+import copy
 import vk_api
+import json_file
 
 from os.path import dirname, abspath
 from pathlib import Path
@@ -29,7 +31,7 @@ def captcha_handler(captcha):
     капчи. Через метод get_url можно получить ссылку на изображение.
     Через метод try_again можно попытаться отправить запрос с кодом капчи
     """
-    key = input("Введите каптчу {0}: ".format(captcha.get_url())).strip()
+    key = input("Введи каптчу {0}: ".format(captcha.get_url())).strip()
 
     # Пробуем снова отправить запрос с капчей
     return captcha.try_again(key)
@@ -57,7 +59,7 @@ async def main():
                 if task_obj in running_post_tasks:
                     running_post_tasks.discard(task_obj)
 
-    async def process_post(post, is_op, parent_post):
+    async def process_post(post, is_op, op_post):
         tasks = set()
 
         if post['from_id'] == user_id:
@@ -66,19 +68,28 @@ async def main():
             else:
                 post_type = 'comment'
 
-            tasks.add(asyncio.create_task(user_post_found(post, post_type, parent_post)))
+            tasks.add(asyncio.create_task(user_post_found(post, post_type, op_post)))
 
         if search_likes and ('likes' in post) and (post['likes']['count'] > 0):
             if is_op:
                 like_type = 'post'
             else:
                 like_type = 'comment'
-            tasks.add(asyncio.create_task(process_likes(post, like_type, parent_post)))
+
+            likes = tools.get_all_iter('likes.getList', 100, {
+                'type': like_type,
+                'owner_id': -group_id,
+                'item_id': post['id']
+            })
+
+            for like in likes:
+                if like == user_id:
+                    tasks.add(asyncio.create_task(user_post_found(post, 'like', op_post)))
 
         for sub_task in tasks:
             await sub_task
 
-    async def process_comments(post, parent_post):
+    async def process_comments(post, op_post):
         comments = tools.get_all_iter('wall.getComments', 100, {
             'owner_id': -group_id,
             'post_id': post['id'],
@@ -88,7 +99,7 @@ async def main():
 
         tasks = set()
         for comment in comments:
-            tasks.add(asyncio.create_task(process_post(comment, False, parent_post)))
+            tasks.add(asyncio.create_task(process_post(comment, False, op_post)))
 
             if comment['thread']['count'] > 0:
                 thread = tools.get_all_iter('wall.getComments', 100, {
@@ -99,33 +110,18 @@ async def main():
                     'comment_id': comment['id']
                 })
                 for thread_post in thread:
-                    tasks.add(asyncio.create_task(process_post(thread_post, False, parent_post)))
+                    tasks.add(asyncio.create_task(process_post(thread_post, False, op_post)))
 
         for sub_task in tasks:
             await sub_task
 
-    async def process_likes(post, like_type, parent_post):
-        likes = tools.get_all_iter('likes.getList', 100, {
-            'type': like_type,
-            'owner_id': -group_id,
-            'item_id': post['id']
-        })
-
-        tasks = set()
-        for like in likes:
-            if like == user_id:
-                tasks.add(asyncio.create_task(user_post_found(post, 'like', parent_post)))
-
-        for sub_task in tasks:
-            await sub_task
-
-    async def user_post_found(post, post_type, parent_post):
+    async def user_post_found(post, post_type, op_post):
         timestamp = post['date']
         date = str(datetime.datetime.fromtimestamp(timestamp))
         uid = f'#{post["id"]}: {date} - ({post_type})'
         log_entry = {
             "text": post['text'],
-            "parent": parent_post['text']
+            "op_post": op_post['text']
         }
 
         async with results_lock:
@@ -146,29 +142,37 @@ async def main():
             with open(error_filename, 'a') as errfile:
                 errfile.write(full_message)
 
-    async def save_results():
-        async with results_lock:
-            results_txt = json.dumps(results, indent=4, sort_keys=True, ensure_ascii=False)
-        with open(results_filename, 'w') as file:
-            file.write(results_txt)
+    def save_results(results_dict):
+        if results_dict:
+            results_txt = json.dumps(results_dict, indent=4, sort_keys=True, ensure_ascii=False)
+
+            with open(results_filename, 'w', encoding='utf-8') as f:
+                f.write(results_txt)
 
     async def show_info():
-        old_results_activity_len = 0
+        last_activity_len = 0
 
         while parsing_in_process:
-            print(f'Текущий пост: {post_count}')
-
+            results_dict = None
             async with results_lock:
                 new_len = len(results['activity'])
 
-            if new_len > old_results_activity_len:
-                old_results_activity_len = new_len
-                await save_results()
+                if new_len > last_activity_len:
+                    results_dict = copy.deepcopy(results)
 
-            await asyncio.sleep(5)
+            print(f'{datetime.datetime.now()}, текущий пост: {post_count}, найдено: {new_len}')
 
-    results = {}
+            async with outfile_lock:
+                try:
+                    save_results(results_dict)
+                    last_activity_len = new_len
+                except Exception as e:
+                    print(e)
+
+            await asyncio.sleep(1)
+
     results_lock = asyncio.Lock()
+    outfile_lock = asyncio.Lock()
 
     post_count = 0
     running_post_tasks = set()
@@ -189,12 +193,19 @@ async def main():
     with open(error_filename, 'w') as file:
         file.write('')
 
+    TASK_POOL_SIZE = 1000
+
     if search_comments:
+        TASK_POOL_SIZE = TASK_POOL_SIZE / 100
+
+    if search_likes:
+        TASK_POOL_SIZE = TASK_POOL_SIZE / 100
+
+    if TASK_POOL_SIZE < 10:
         TASK_POOL_SIZE = 10
-    else:
-        TASK_POOL_SIZE = 1000
 
     try:
+        print(f'Размер пула: {TASK_POOL_SIZE}')
         print(f'Авторизация...')
         vk_session = vk_api.VkApi(login, password, auth_handler=auth_handler, captcha_handler=captcha_handler)
         vk = vk_session.get_api()
@@ -222,7 +233,7 @@ async def main():
 
         print('Парсим посты...')
 
-        await save_results()
+        save_results(results)
         parsing_in_process = True
         info_task = asyncio.create_task(show_info())
 
@@ -252,7 +263,7 @@ async def main():
     except Exception as error_msg:
         await log_error(error_msg)
 
-    await save_results()
+    save_results(results)
 
     print("Готово.")
 
