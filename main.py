@@ -62,13 +62,14 @@ async def main():
     async def process_post(post, is_op, op_post):
         tasks = set()
 
-        if post['from_id'] == user_id:
+        post_user_id = post['from_id']
+        if is_target(post_user_id):
             if is_op:
                 post_type = 'OP'
             else:
                 post_type = 'comment'
 
-            tasks.add(asyncio.create_task(user_post_found(post, post_type, op_post)))
+            tasks.add(asyncio.create_task(user_post_found(post_user_id, post, post_type, op_post)))
 
         if search_likes and ('likes' in post) and (post['likes']['count'] > 0):
             if is_op:
@@ -83,11 +84,17 @@ async def main():
             })
 
             for like in likes:
-                if like == user_id:
-                    tasks.add(asyncio.create_task(user_post_found(post, 'like', op_post)))
+                if is_target(like):
+                    tasks.add(asyncio.create_task(user_post_found(like, post, 'like', op_post)))
 
         for sub_task in tasks:
             await sub_task
+
+    def is_target(user_id):
+        for target_id in target_ids:
+            if user_id == target_id:
+                return True
+        return False
 
     async def process_comments(post, op_post):
         comments = tools.get_all_iter('wall.getComments', 100, {
@@ -115,7 +122,7 @@ async def main():
         for sub_task in tasks:
             await sub_task
 
-    async def user_post_found(post, post_type, op_post):
+    async def user_post_found(post_user_id, post, post_type, op_post):
         timestamp = post['date']
         date = str(datetime.datetime.fromtimestamp(timestamp))
         uid = f'#{post["id"]}: {date} - ({post_type})'
@@ -124,12 +131,14 @@ async def main():
             "op_post": op_post['text']
         }
 
-        async with results_lock:
-            if results['last_activity']['timestamp'] < timestamp:
-                results['last_activity']['timestamp'] = timestamp
-                results['last_activity']['string'] = date
+        this_user_results = results[str(post_user_id)]
 
-            results['activity'][uid] = log_entry
+        async with results_lock:
+            if this_user_results['last_activity']['timestamp'] < timestamp:
+                this_user_results['last_activity']['timestamp'] = timestamp
+                this_user_results['last_activity']['string'] = date
+
+            this_user_results['target_activity'][uid] = log_entry
 
     async def log_error(message):
         now = datetime.datetime.now().isoformat(sep=" ", timespec="seconds")
@@ -155,19 +164,19 @@ async def main():
         while parsing_in_process:
             results_dict = None
             async with results_lock:
-                new_len = len(results['activity'])
+                new_len = 0
+                for target_id in target_ids:
+                    new_len += len(results[str(target_id)]['target_activity'])
 
                 if new_len > last_activity_len:
-                    results_dict = copy.deepcopy(results)
+                    async with outfile_lock:
+                        try:
+                            save_results(results)
+                            last_activity_len = new_len
+                        except Exception as e:
+                            print(e)
 
             print(f'{datetime.datetime.now()}, текущий пост: {post_count}, найдено: {new_len}')
-
-            async with outfile_lock:
-                try:
-                    save_results(results_dict)
-                    last_activity_len = new_len
-                except Exception as e:
-                    print(e)
 
             await asyncio.sleep(1)
 
@@ -183,7 +192,7 @@ async def main():
     settings = json_file.JsonFile(filename_settings)
     login = settings['my_login']
     password = settings['my_password']
-    user_address = settings['user_address']
+    user_addresses = settings['user_addresses']
     group_address = settings['group_address']
     results_filename = dirname_root / settings['results_filename']
     error_filename = dirname_root / settings['error_filename']
@@ -212,24 +221,34 @@ async def main():
         vk_session.auth()
         tools = vk_api.VkTools(vk_session)
 
-        print(f'Находим id пользователя {user_address}...')
-        user_id = vk.utils.resolveScreenName(screen_name=user_address)['object_id']
+        results = {}
+
+        target_ids = []
+        for user_addr in user_addresses:
+            print(f'Находим id пользователя {user_addr}...')
+            user_id = vk.utils.resolveScreenName(screen_name=user_addr)['object_id']
+
+            print(f'Находим имя пользователя {user_addr}...')
+            user_names = vk.users.get(user_id=user_id)
+            first_name = user_names[0]['first_name']
+            last_name = user_names[0]['last_name']
+
+            target_ids.append(user_id)
+            results[str(user_id)] = {
+                'target': f'{user_addr} (id={user_id}), {first_name} {last_name}',
+                'target_activity': {},
+                'last_activity': {
+                    'timestamp': 0,
+                    'string': ''
+                }
+            }
 
         print(f'Находим id группы {group_address}...')
         group_id = vk.utils.resolveScreenName(screen_name=group_address)['object_id']
+        results['location'] = f'{group_address} (id={group_id})'
 
         print('Получаем стену группы...')
         posts = tools.get_all_iter('wall.get', 100, {'owner_id': -group_id})
-
-        results = {
-            'target': f'{user_address} (id={user_id})',
-            'location': f'{group_address} (id={group_id})',
-            'activity': {},
-            'last_activity': {
-                'timestamp': 0,
-                'string': ''
-            }
-        }
 
         print('Парсим посты...')
 
