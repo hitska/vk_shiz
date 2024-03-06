@@ -213,15 +213,15 @@ async def main():
     if TASK_POOL_SIZE < 10:
         TASK_POOL_SIZE = 10
 
+    results = {}
+
     try:
         print(f'Размер пула: {TASK_POOL_SIZE}')
         print(f'Авторизация...')
-        vk_session = vk_api.VkApi(login, password, auth_handler=auth_handler, captcha_handler=captcha_handler)
+        vk_session = vk_api.VkApi(login, password, app_id=2685278, auth_handler=auth_handler, captcha_handler=captcha_handler)
         vk = vk_session.get_api()
         vk_session.auth()
         tools = vk_api.VkTools(vk_session)
-
-        results = {}
 
         target_ids = []
         for user_addr in user_addresses:
