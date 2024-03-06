@@ -6,8 +6,10 @@
 
 ## Шаг 1: установить vk_api
 
+Важно взять последнюю версию со всеми багфиксами, поэтому ставим прямо из гита.
+
 ```bash
-pip3 install vk_api
+pip3 install git+https://github.com/python273/vk_api.git
 ```
 
 ## Шаг 2: заполнить настройки
